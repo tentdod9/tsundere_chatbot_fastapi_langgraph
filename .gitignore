@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+.env
+
+test.py
+*_test.py
+*_c.py
+*2.py
+chat.py
+
+debug.png
+test.txt
