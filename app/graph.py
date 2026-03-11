@@ -15,6 +15,7 @@ from .redis_manager import redis_memory
 from pprint import pprint
 
 from langgraph.checkpoint.redis import RedisSaver
+
 redis_cm = RedisSaver.from_conn_string("redis://redis:6379")
 redis_checkpoint = redis_cm.__enter__()
 redis_checkpoint.setup()
@@ -32,7 +33,7 @@ class ChatbotState(TypedDict):
     messages: Annotated[list, add_messages]
     tool_message: list
 
-llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 2048+2048)
+llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192)
 
 def sentiment_node(state: ChatbotState) -> ChatbotState:
     print(state)
@@ -155,6 +156,7 @@ def tools_router(state: ChatbotState):
 graph = StateGraph(ChatbotState)
 
 preference_tool_node = ToolNode(tools=TOOLS, messages_key="tool_message")
+
 # Add nodes
 graph.add_node("sentiment_node", sentiment_node)
 graph.add_node("update_score_node", update_score_node)
@@ -163,7 +165,6 @@ graph.add_node("extract_user_info_node", extract_user_info_node)
 graph.add_node("preference_tool_node", preference_tool_node)
 
 # Define edges (flow)
-# graph.set_entry_point("sentiment_node")
 
 graph.add_edge(START, "sentiment_node")
 graph.add_edge(START, "extract_user_info_node")
