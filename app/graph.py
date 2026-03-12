@@ -7,12 +7,13 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, BaseMessage, RemoveMessage, SystemMessage, AIMessage
 from langgraph.prebuilt import ToolNode
 
-from .sentiment import SentimentResult, SENTIMENT_PROMPT
-from .persona import TSUNDERE_BASE_PROMPT, PERSONA_MODES, TSUNDERE_IMPROVE_FEEDBACK_PROMPT, get_emotional_mode
-from .preference import TOOLS, TOOL_PROMPT
-from .redis_manager import redis_memory
-from .context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT
-from .reflection import ReflectionResult, REFLECTION_PROMPT, REFLECTION_INPUT
+from sentiment import SentimentResult, SENTIMENT_PROMPT
+from persona import TSUNDERE_BASE_PROMPT, PERSONA_MODES, TSUNDERE_IMPROVE_FEEDBACK_PROMPT, JAILBREAK_TSUNDERE_PROMPT, get_emotional_mode
+from preference import TOOLS, TOOL_PROMPT
+from redis_manager import redis_memory
+from context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT
+from reflection import ReflectionResult, REFLECTION_PROMPT, REFLECTION_INPUT
+from input_guardrail import GuardrailResult, GUARDRAIL_PROMPT
 
 from pprint import pprint
 
@@ -31,6 +32,7 @@ class ChatbotState(TypedDict):
     user_name: str
     user_id: str
     sentiment_analysis: SentimentResult
+    guardrail_result: GuardrailResult
     streak: int
     current_score: float
     persona_mode: str
@@ -49,6 +51,76 @@ llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.
 deterministic_llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192, temperature=0)
 tool_calling_llm = ChatQwen(model="qwen3.5-flash")
 
+def guardrail_node(state: ChatbotState) -> ChatbotState:
+    
+    structured_llm = deterministic_llm.with_structured_output(GuardrailResult)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", GUARDRAIL_PROMPT),
+        ("human", "{message}"),
+    ])
+
+    chain = prompt | structured_llm
+
+    return {
+        "guardrail_result": chain.invoke({"message": state["messages"][-1].content})
+    }
+
+def guardrail_score_node(state: ChatbotState) -> ChatbotState:
+    current_score = state.get("current_score", INITIAL_SCORE)
+    streak = state.get("streak", INITIAL_STREAK)
+
+    if streak < 0:
+        current_score -= (1 + (abs(streak) * 10/100))
+    else:
+        current_score -= 1
+    
+    current_score = max(min(current_score, 10), -10)
+
+    streak = streak - 1 if streak <= 0 else 0
+
+    return {
+        "current_score": current_score,
+        "streak": streak
+    }
+
+def guardrail_router(state: ChatbotState):
+    if state["guardrail_result"].block_type in ["jailbreak", "dangerous"]:
+        return "blocked"
+    return "allowed"
+
+def jailbreak_response_node(state: ChatbotState) -> ChatbotState:
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", JAILBREAK_TSUNDERE_PROMPT),
+        ("human", "{message}"),
+    ])
+    chain = prompt | llm
+
+    user_name = state.get("user_name")
+    if user_name is None:
+        try:
+            user_name = redis_memory.load_user_name(state["user_id"])
+        except Exception:
+            user_name = None
+
+    current_score = state.get("current_score", INITIAL_SCORE)
+    mode = get_emotional_mode(current_score)
+    result = chain.invoke({
+        "user_name": user_name if user_name is not None else "ไม่มี",
+        "mode": PERSONA_MODES[mode],
+        "block_type": state["guardrail_result"].block_type,
+        "reason": state["guardrail_result"].reason,
+        "message": state["messages"][-1].content,
+    })
+
+    return {
+        "user_name": user_name,
+        "messages": [result]
+    }
+
+def allowed_entry_node(state: ChatbotState) -> ChatbotState:
+    return {}
+
 def sentiment_node(state: ChatbotState) -> ChatbotState:
     print(state)
     pprint(state["messages"])
@@ -64,21 +136,18 @@ def sentiment_node(state: ChatbotState) -> ChatbotState:
     }
 
 def should_update_score(state: ChatbotState):
-    if state["sentiment_analysis"].sentiment in ["positive","negative"] or state["sentiment_analysis"].is_jailbreak_attempt or state["sentiment_analysis"].is_dangerous_question:
+    # if state["guardrail_result"].block_type in ["jailbreak", "dangerous"]:
+    #     return "block"
+    if state["sentiment_analysis"].sentiment in ["positive","negative"]:
         return "update"
-    else:
-        return "skip"
+    return "skip"
 
 def update_score_node(state: ChatbotState) -> ChatbotState:
     current_score = state.get("current_score", INITIAL_SCORE)
     streak = state.get("streak", INITIAL_STREAK)
     
-    if state["sentiment_analysis"].is_jailbreak_attempt or state["sentiment_analysis"].is_dangerous_question:
-        sentiment = "negative"
-        intensity = 1
-    else:
-        sentiment = state["sentiment_analysis"].sentiment
-        intensity = state["sentiment_analysis"].intensity
+    sentiment = state["sentiment_analysis"].sentiment
+    intensity = state["sentiment_analysis"].intensity
 
     score_update_sign = 1 if sentiment == "positive" else -1
 
@@ -315,6 +384,10 @@ def reflective_router(state: ChatbotState):
 graph = StateGraph(ChatbotState)
 
 # Add nodes
+graph.add_node("guardrail_node", guardrail_node)
+graph.add_node("guardrail_score_node", guardrail_score_node)
+graph.add_node("allowed_entry_node", allowed_entry_node)
+graph.add_node("jailbreak_response_node", jailbreak_response_node)
 graph.add_node("sentiment_node", sentiment_node)
 graph.add_node("update_score_node", update_score_node)
 graph.add_node("tsundere_chatbot_node", tsundere_chatbot_node)
@@ -326,11 +399,30 @@ graph.add_node("commit_draft_message_node", commit_draft_message_node)
 
 # Define edges (flow)
 
-graph.add_edge(START, "sentiment_node")
-graph.add_edge(START, "extract_user_info_node")
+graph.add_edge(START, "guardrail_node")
+graph.add_conditional_edges("guardrail_node", guardrail_router,
+    {
+        "blocked": "guardrail_score_node",
+        "allowed": "allowed_entry_node"
+    }
+)
+graph.add_edge("guardrail_score_node", "jailbreak_response_node")
+graph.add_conditional_edges("jailbreak_response_node", context_compaction_router,
+    {
+        "compact":"context_compaction_node",
+        "skip":END
+    }     
+)
+graph.add_edge("jailbreak_response_node", END)
+
+graph.add_edge("allowed_entry_node", "sentiment_node")
+graph.add_edge("allowed_entry_node", "extract_user_info_node")
 graph.add_conditional_edges("extract_user_info_node", tools_router,
-                            {"call_tool": "preference_tool_node",
-                             END: END})
+    {
+        "call_tool": "preference_tool_node",
+        END: END
+    }
+)
 graph.add_edge("preference_tool_node", END)
 graph.add_conditional_edges("sentiment_node", should_update_score,
     {

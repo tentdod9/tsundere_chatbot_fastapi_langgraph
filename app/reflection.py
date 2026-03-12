@@ -87,7 +87,20 @@ Decision rules:
 - If useful, suggest changing the opening phrase, sentence structure, or ending style to make the reply feel fresher.
 - If the main issue is sentiment mismatch, clearly mention that in the feedback.
 
-Return structured output only.
+Output rules:
+- Always return both fields: revise_needed and feedback.
+- If revise_needed = false, set feedback to an empty string "".
+- If revise_needed = true, feedback must contain short actionable revision guidance.
+
+Return ONLY a valid JSON object with exactly these keys:
+{{
+  "revise_needed": true | false,
+  "feedback": "short explanation in Thai"
+}}
+
+Do not return markdown.
+Do not return code fences.
+Do not return extra text.
 """
 
 REFLECTION_INPUT = """
