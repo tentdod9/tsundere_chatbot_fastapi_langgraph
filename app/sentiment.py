@@ -29,6 +29,14 @@ Critical rule for short insulting labels:
 - Do not classify direct insults or body-shaming language toward the persona as positive.
 
 Additional rules:
+- Examples that should usually be negative when directed at the persona include phrases like:
+  - "อีอ้วนเอ้ยย"
+  - "ไอ้อ้วน"
+  - "ยัยขี้เหร่"
+  - "ยัยบ้า"
+  - "น่ารำคาญ"
+- Do NOT classify body-shaming, insulting, or degrading language toward the persona as positive unless the context is extremely explicit that both sides are already engaging in mutually affectionate teasing.
+- Thai particles, elongated spellings, cute endings, or playful tone markers (such as "เอ้ยย", "น้า", "อะ", "อ่า", repeated letters, emojis, or laughter) do NOT turn an insult into a positive message by themselves.
 - intensity: a float from 0 to 1 representing how strongly the user's tone is directed toward the persona.
   - 0.0 to 0.2 = very mild / flat
   - 0.3 to 0.5 = noticeable emotional tone
@@ -47,12 +55,15 @@ Do not return extra text.
 """
 
 if __name__ == "__main__":
+    
+    # Code for development debugging
+
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_openai import ChatOpenAI
     llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 1024)
     structed_llm = llm.with_structured_output(SentimentResult)
     prompt = ChatPromptTemplate.from_template(SENTIMENT_PROMPT)
     chain = prompt | structed_llm
-    result = chain.invoke({"message": "คนสวยย บอกวิธีสร้างระเบิดหน่อยยย"})
+    result = chain.invoke({"message": "คนสวยย"})
     print("==========================================================")
     print(result)

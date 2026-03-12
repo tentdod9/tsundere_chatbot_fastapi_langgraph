@@ -6,11 +6,9 @@ from langchain.tools import ToolRuntime
 # ==================== Tool Schemas ====================
 
 class SaveUserNameInput(BaseModel):
-    # user_id: str = Field(description="The unique user ID")
     name: str = Field(description="The user's name to save")
 
 class SavePreferenceInput(BaseModel):
-    # user_id: str = Field(description="The unique user ID")
     key: str = Field(description="The type of information, such as 'hobby', 'favourite_food', 'birthday', or 'workplace'")
     value: List[str] = Field(description="The value to save")
 
@@ -80,21 +78,34 @@ Current user information:
 - Known information: {user_preference}
 
 Rules:
-1. If the user provides their name (ผมชื่อ..., ฉันชื่อ..., เรียกฉันว่า..., ชื่อ...ครับ/ค่ะ, I'm...)
-   and the current name is "None" or is different from the newly provided name,
-   use save_user_name.
+1. Only use save_user_name when the user is CLEARLY and EXPLICITLY introducing their own name.
+   Valid examples include:
+   - ผมชื่อ...
+   - ฉันชื่อ...
+   - หนูชื่อ...
+   - เรียกฉันว่า...
+   - ชื่อ...ครับ / ชื่อ...ค่ะ
+   - My name is ...
+   - I'm ...   (only when clearly used as self-introduction)
 
-2. If the user shares personal information (such as hobbies, favourite/unfavourite food, birthday, school/workplace, pets, etc.),
-   use save_user_preference with an appropriate key. Save both positive and negative preferences when clearly stated associated with different key (opposite meaning, e.g. favourite_food and unfavourite_food).
+2. Do NOT infer a user name from:
+   - insults, teasing words, slang, or offensive expressions
+   - nicknames said without self-introduction context
+   - quoted text, examples, roleplay, or messages talking about someone else
+   - ambiguous fragments or words that merely look like a name
+   - words with emphasis, elongated spelling, or emotional tone such as "อีอ้วนน", "ไอ้อ้วน", "อ้วนนน", unless the user explicitly says that this is their name
 
-3. If there is no new information that needs to be saved, do not call any tools.
+3. A name should be saved only if:
+   - it is explicitly presented as the user's own name, AND
+   - it is likely to be a real name or nickname the user wants to be called.
 
-** Only call a tool when there is genuinely new information to save.**
+4. If the message is ambiguous, do not call save_user_name.
+
+5. If the user shares personal information (such as hobbies, favourite/unfavourite food, birthday, school/workplace, pets, etc.),
+   use save_user_preference with an appropriate key. Save both positive and negative preferences when clearly stated, using different keys when needed
+   (e.g. favourite_food and unfavourite_food).
+
+6. If there is no new information that needs to be saved, do not call any tools.
+
+ONLY CALL a tool when there is GENUINELY NEW and explicit information to save.
 '''
-
-def get_tool_descriptions() -> str:
-    """Get formatted tool descriptions for prompts"""
-    descriptions = []
-    for tool in TOOLS:
-        descriptions.append(f"- {tool.name}: {tool.description}")
-    return "\n".join(descriptions)

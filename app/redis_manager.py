@@ -19,9 +19,6 @@ class UserPreferenceMemory:
     def _sessions_list_key(self, user_id: str) -> str:
         return f"{self.namespace_prefix}:users:{user_id}:sessions"
     
-    # def _sessions_list_key(self, user_id: str) -> str:
-    #     return f"{self.namespace_prefix}:users:{user_id}:sessions"
-
     def add_preference(self, user_id: str, key: str, value: str) -> None:
         """
         Add a preference value.
@@ -197,11 +194,13 @@ redis_memory = UserPreferenceMemory("redis://redis:6379")
 
 if __name__ == "__main__":
 
-    # redis_memory.add_session_list("admin4", "six", "ฉันชื่อเต็นท์ ชอบกินไอติม พิซซ่า ซูชิ และชอบดูอนิเมะ ออกกำลังกาย และอ่านนิยายวาย ฉันเกิดวันพุธ และชอบสีแดง")
-    redis_memory.get_session_list("admin4")
-    # redis_memory.get_session_info("admin4","four")
-    # memory.add_preference("u123", "favourite_food", "ราเมง")
-    # memory.add_preference("u123", "favourite_food", "ส้มตำ")
+    # Code for development debugging
+    
+    redis_memory.add_session_list("u123", "some_thread_id", "ฉันชื่อนนท์ ชอบกินไอติม พิซซ่า ซูชิ และชอบดูอนิเมะ ออกกำลังกาย และอ่านนิยาย ฉันเกิดวันพุธ และชอบสีแดง")
+    redis_memory.get_session_list("u123")
+    redis_memory.get_session_info("u123","some_thread_id")
+    redis_memory.add_preference("u123", "favourite_food", "ราเมง")
+    redis_memory.add_preference("u123", "favourite_food", "ส้มตำ")
 
-    # print(memory.load_preference("u123", "favourite_food"))
-    # print(memory.load_all_preferences())
+    print(redis_memory.load_preference("u123", "favourite_food"))
+    print(redis_memory.load_all_preferences())

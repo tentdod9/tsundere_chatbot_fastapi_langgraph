@@ -8,14 +8,12 @@ from langchain_core.messages import HumanMessage, BaseMessage, RemoveMessage, Sy
 from langgraph.prebuilt import ToolNode
 
 from .sentiment import SentimentResult, SENTIMENT_PROMPT
-from .persona import TSUNDERE_BASE_PROMPT, PERSONA_MODES, TSUNDERE_IMPROVE_FEEDBACK_PROMPT, JAILBREAK_TSUNDERE_PROMPT, get_emotional_mode
+from .persona import TSUNDERE_BASE_PROMPT, PERSONA_MODES, TSUNDERE_IMPROVE_FEEDBACK_PROMPT, JAILBREAK_TSUNDERE_PROMPT, TSUNDERE_IMPROVE_FEEDBACK_INPUT, get_emotional_mode
 from .preference import TOOLS, TOOL_PROMPT
 from .redis_manager import redis_memory
-from .context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT
-from .reflection import ReflectionResult, REFLECTION_PROMPT, REFLECTION_INPUT
+from .context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT, MAX_HISTORY
+from .reflection import ReflectionResult, REFLECTION_PROMPT, REFLECTION_INPUT, MAX_REFLECTION_ROUNDS
 from .input_guardrail import GuardrailResult, GUARDRAIL_PROMPT
-
-from pprint import pprint
 
 from langgraph.checkpoint.redis import RedisSaver
 
@@ -25,8 +23,7 @@ redis_checkpoint.setup()
 
 INITIAL_SCORE = 0.0
 INITIAL_STREAK = 0
-MAX_HISTORY = 20 # Because 10 HumanMessage + 10 AIMessage = 20 Messages
-MAX_REFLECTION_ROUNDS = 2
+
 class ChatbotState(TypedDict):
     """State for flow through the entire graph"""
     user_name: str
@@ -37,11 +34,8 @@ class ChatbotState(TypedDict):
     current_score: float
     persona_mode: str
     messages: Annotated[list[BaseMessage], add_messages]
-    
     tool_message: list
-    
     summary: str
-
     draft_message: BaseMessage
     revise_needed: bool
     reflection_feedback: str
@@ -52,7 +46,6 @@ deterministic_llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url
 tool_calling_llm = ChatQwen(model="qwen3.5-flash")
 
 def guardrail_node(state: ChatbotState) -> ChatbotState:
-    
     structured_llm = deterministic_llm.with_structured_output(GuardrailResult)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -122,10 +115,8 @@ def allowed_entry_node(state: ChatbotState) -> ChatbotState:
     return {}
 
 def sentiment_node(state: ChatbotState) -> ChatbotState:
-    print(state)
-    pprint(state["messages"])
     structed_llm = deterministic_llm.with_structured_output(SentimentResult)
-    # prompt = ChatPromptTemplate.from_template(SENTIMENT_PROMPT)
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", SENTIMENT_PROMPT),
         ("human", "{message}"),
@@ -136,8 +127,6 @@ def sentiment_node(state: ChatbotState) -> ChatbotState:
     }
 
 def should_update_score(state: ChatbotState):
-    # if state["guardrail_result"].block_type in ["jailbreak", "dangerous"]:
-    #     return "block"
     if state["sentiment_analysis"].sentiment in ["positive","negative"]:
         return "update"
     return "skip"
@@ -164,7 +153,6 @@ def update_score_node(state: ChatbotState) -> ChatbotState:
     else:
         streak = streak - 1 if streak <= 0 else 0
 
-    print("===============Update Score================")
     return {
         "current_score": current_score,
         "streak": streak
@@ -174,7 +162,6 @@ def update_score_node(state: ChatbotState) -> ChatbotState:
 def extract_user_info_node(state: ChatbotState) -> ChatbotState:
     llm_with_tools = tool_calling_llm.bind_tools(TOOLS)
     
-    print(TOOLS)
     prompt = ChatPromptTemplate.from_messages([
         ("system", TOOL_PROMPT),
         ("human", "{message}"),
@@ -248,10 +235,11 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
             )
         )
 
+    # When revising based on feedback from reflective_node
     if previous_draft and reflection_feedback:
         prompt = ChatPromptTemplate.from_messages([
         ("system", TSUNDERE_IMPROVE_FEEDBACK_PROMPT),
-            MessagesPlaceholder("message"),
+        ("human", TSUNDERE_IMPROVE_FEEDBACK_INPUT),
         ])
         chain = prompt | llm
 
@@ -261,8 +249,7 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
             "user_name": user_name if user_name is not None else "(ไม่มี)",
             "mode": PERSONA_MODES[mode],
             "reflection_feedback": reflection_feedback,
-            "draft_message": previous_draft.content,
-            "message": model_messages})
+            "draft_message": previous_draft.content})
         }
 
     chain = prompt | llm
@@ -381,75 +368,73 @@ def reflective_router(state: ChatbotState):
         return "retry"
     return "pass"
 
-graph = StateGraph(ChatbotState)
+def build_graph():
+    graph = StateGraph(ChatbotState)
 
-# Add nodes
-graph.add_node("guardrail_node", guardrail_node)
-graph.add_node("guardrail_score_node", guardrail_score_node)
-graph.add_node("allowed_entry_node", allowed_entry_node)
-graph.add_node("jailbreak_response_node", jailbreak_response_node)
-graph.add_node("sentiment_node", sentiment_node)
-graph.add_node("update_score_node", update_score_node)
-graph.add_node("tsundere_chatbot_node", tsundere_chatbot_node)
-graph.add_node("extract_user_info_node", extract_user_info_node)
-graph.add_node("preference_tool_node", preference_tool_node)
-graph.add_node("context_compaction_node", context_compaction_node)
-graph.add_node("reflective_node", reflective_node)
-graph.add_node("commit_draft_message_node", commit_draft_message_node)
+    # Add nodes
+    graph.add_node("guardrail_node", guardrail_node)
+    graph.add_node("guardrail_score_node", guardrail_score_node)
+    graph.add_node("allowed_entry_node", allowed_entry_node)
+    graph.add_node("jailbreak_response_node", jailbreak_response_node)
+    graph.add_node("sentiment_node", sentiment_node)
+    graph.add_node("update_score_node", update_score_node)
+    graph.add_node("tsundere_chatbot_node", tsundere_chatbot_node)
+    graph.add_node("extract_user_info_node", extract_user_info_node)
+    graph.add_node("preference_tool_node", preference_tool_node)
+    graph.add_node("context_compaction_node", context_compaction_node)
+    graph.add_node("reflective_node", reflective_node)
+    graph.add_node("commit_draft_message_node", commit_draft_message_node)
 
-# Define edges (flow)
+    # Define edges (flow)
+    graph.add_edge(START, "guardrail_node")
+    graph.add_conditional_edges("guardrail_node", guardrail_router,
+        {
+            "blocked": "guardrail_score_node",
+            "allowed": "allowed_entry_node"
+        }
+    )
+    graph.add_edge("guardrail_score_node", "jailbreak_response_node")
+    graph.add_conditional_edges("jailbreak_response_node", context_compaction_router,
+        {
+            "compact":"context_compaction_node",
+            "skip":END
+        }     
+    )
+    graph.add_edge("jailbreak_response_node", END)
 
-graph.add_edge(START, "guardrail_node")
-graph.add_conditional_edges("guardrail_node", guardrail_router,
-    {
-        "blocked": "guardrail_score_node",
-        "allowed": "allowed_entry_node"
-    }
-)
-graph.add_edge("guardrail_score_node", "jailbreak_response_node")
-graph.add_conditional_edges("jailbreak_response_node", context_compaction_router,
-    {
-        "compact":"context_compaction_node",
-        "skip":END
-    }     
-)
-graph.add_edge("jailbreak_response_node", END)
+    graph.add_edge("allowed_entry_node", "sentiment_node")
+    graph.add_edge("allowed_entry_node", "extract_user_info_node")
+    graph.add_conditional_edges("extract_user_info_node", tools_router,
+        {
+            "call_tool": "preference_tool_node",
+            END: END
+        }
+    )
+    graph.add_edge("preference_tool_node", END)
+    graph.add_conditional_edges("sentiment_node", should_update_score,
+        {
+            "update":"update_score_node",
+            "skip":"tsundere_chatbot_node"
+        }     
+    )
+    graph.add_edge("update_score_node", "tsundere_chatbot_node")
+    graph.add_edge("tsundere_chatbot_node", "reflective_node")
+    graph.add_conditional_edges("reflective_node", reflective_router,
+        {
+            "retry":"tsundere_chatbot_node",
+            "pass":"commit_draft_message_node"
+        }     
+    )
+    graph.add_conditional_edges("commit_draft_message_node", context_compaction_router,
+        {
+            "compact":"context_compaction_node",
+            "skip":END
+        }     
+    )
+    graph.add_edge("context_compaction_node", END)
 
-graph.add_edge("allowed_entry_node", "sentiment_node")
-graph.add_edge("allowed_entry_node", "extract_user_info_node")
-graph.add_conditional_edges("extract_user_info_node", tools_router,
-    {
-        "call_tool": "preference_tool_node",
-        END: END
-    }
-)
-graph.add_edge("preference_tool_node", END)
-graph.add_conditional_edges("sentiment_node", should_update_score,
-    {
-        "update":"update_score_node",
-        "skip":"tsundere_chatbot_node"
-    }     
-)
-graph.add_edge("update_score_node", "tsundere_chatbot_node")
-graph.add_edge("tsundere_chatbot_node", "reflective_node")
-graph.add_conditional_edges("reflective_node", reflective_router,
-    {
-        "retry":"tsundere_chatbot_node",
-        "pass":"commit_draft_message_node"
-    }     
-)
-graph.add_conditional_edges("commit_draft_message_node", context_compaction_router,
-    {
-        "compact":"context_compaction_node",
-        "skip":END
-    }     
-)
-graph.add_edge("context_compaction_node", END)
-# graph.add_edge("tsundere_chatbot_node", END)
-
-
-# Compile
-app = graph.compile(checkpointer=redis_checkpoint)
+    # Compile
+    return graph.compile(checkpointer=redis_checkpoint)
 
 def call_graph(user_input: str, user_id: str, thread_id:str) -> Tuple[str, float]:
     
@@ -464,10 +449,15 @@ def call_graph(user_input: str, user_id: str, thread_id:str) -> Tuple[str, float
     
     return result["messages"][-1].content, result.get("current_score", INITIAL_SCORE)
 
+# Singleton graph instance
+app = build_graph()
+
 if __name__ == "__main__":
+
+    # Code for development debugging
     app.get_graph().draw_mermaid_png(output_file_path='debug.png')
     config = {"configurable": {
-    "thread_id": "sevenseven2"
+    "thread_id": "some_thread_id"
     }}
     
 
@@ -478,7 +468,7 @@ if __name__ == "__main__":
         else: 
             result = app.invoke({
                 "messages": [HumanMessage(content=user_input)],
-                "user_id": "ad4"
+                "user_id": "some_user_id"
             }, config=config)
 
             print("AI: " + result["messages"][-1].content)
