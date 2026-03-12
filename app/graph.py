@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import ToolNode
 
 from .sentiment import SentimentResult, SENTIMENT_PROMPT
-from .prompts import TSUNDERE_BASE_PROMPT, PERSONA_MODES
+from .persona_prompts import TSUNDERE_BASE_PROMPT, PERSONA_MODES
 from .preference import TOOLS, TOOL_PROMPT
 from .redis_manager import redis_memory
 
@@ -137,9 +137,11 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
     ])
     chain = prompt | llm
 
+    user_name = state.get("user_name", "None")
+    call_user = user_name if user_name != "None" else "เธอ"
     return {
         "messages": [chain.invoke({
-            "user_name": state.get("user_name", "None"),
+            "user_name": call_user,
             "mode": PERSONA_MODES[mode],
             "message": state["messages"]})]
     }
