@@ -4,14 +4,15 @@ from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated, Tuple
 from langgraph.graph.message import add_messages, REMOVE_ALL_MESSAGES
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, BaseMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import HumanMessage, BaseMessage, RemoveMessage, SystemMessage, AIMessage
 from langgraph.prebuilt import ToolNode
 
 from .sentiment import SentimentResult, SENTIMENT_PROMPT
-from .persona_prompts import TSUNDERE_BASE_PROMPT, PERSONA_MODES
+from .persona import TSUNDERE_BASE_PROMPT, PERSONA_MODES, TSUNDERE_IMPROVE_FEEDBACK_PROMPT, get_emotional_mode
 from .preference import TOOLS, TOOL_PROMPT
 from .redis_manager import redis_memory
 from .context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT
+from .reflection import ReflectionResult, REFLECTION_PROMPT, REFLECTION_INPUT
 
 from pprint import pprint
 
@@ -24,6 +25,7 @@ redis_checkpoint.setup()
 INITIAL_SCORE = 0.0
 INITIAL_STREAK = 0
 MAX_HISTORY = 20 # Because 10 HumanMessage + 10 AIMessage = 20 Messages
+MAX_REFLECTION_ROUNDS = 2
 class ChatbotState(TypedDict):
     """State for flow through the entire graph"""
     user_name: str
@@ -33,8 +35,15 @@ class ChatbotState(TypedDict):
     current_score: float
     persona_mode: str
     messages: Annotated[list[BaseMessage], add_messages]
+    
     tool_message: list
+    
     summary: str
+
+    draft_message: BaseMessage
+    revise_needed: bool
+    reflection_feedback: str
+    reflection_count: int
 
 llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192)
 deterministic_llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192, temperature=0)
@@ -74,7 +83,7 @@ def update_score_node(state: ChatbotState) -> ChatbotState:
     score_update_sign = 1 if sentiment == "positive" else -1
 
 
-    if (score_update_sign > 0 and sentiment == "positive") or (score_update_sign < 0 and sentiment == "negative"):
+    if (streak > 0 and sentiment == "positive") or (streak < 0 and sentiment == "negative"):
         current_score += score_update_sign * intensity * (1 + (abs(streak) * 10/100))
     else:
         current_score += score_update_sign * intensity
@@ -110,7 +119,7 @@ def extract_user_info_node(state: ChatbotState) -> ChatbotState:
         user_preference = "None"
 
     user_name = state.get("user_name")
-    if user_name is None:
+    if not user_name:
         try:
             user_name = redis_memory.load_user_name(state["user_id"])
         except:
@@ -118,28 +127,28 @@ def extract_user_info_node(state: ChatbotState) -> ChatbotState:
 
     return {
         "tool_message": [chain.invoke({
-            "user_name": user_name if user_name is not None else "None",
+            "user_name": user_name if user_name else "None",
             "user_preference": user_preference,
             "message": state["messages"][-1].content,
             })]
     }
+
+def tools_router(state: ChatbotState):
+    last_message = state["tool_message"][-1]
+
+    if(hasattr(last_message, "tool_calls") and len(last_message.tool_calls) > 0):
+        return "call_tool"
+    else: 
+        return END
     
+preference_tool_node = ToolNode(tools=TOOLS, messages_key="tool_message")   
 
 def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
 
     current_score = state.get("current_score", INITIAL_SCORE)
-
-    def get_emotional_mode(current_score: float) -> str:
-        if current_score <= -6 : # -10 <= current_score <= -6
-            return "hate"
-        elif current_score <= -2: # -6 < current_score <= -2
-            return "annoyed"
-        elif current_score <= 2: # -2 < current_score <= 2
-            return "tsun"
-        elif current_score <= 7: # 3 <= current_score <= 7
-            return "shy"
-        else: # 7 < current_score <= 10
-            return "dere"
+    
+    reflection_feedback = state.get("reflection_feedback", "")
+    previous_draft = state.get("draft_message", "")
         
     mode = get_emotional_mode(current_score)
     
@@ -147,10 +156,9 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
         ("system", TSUNDERE_BASE_PROMPT),
         MessagesPlaceholder("message"),
     ])
-    chain = prompt | llm
 
     user_name = state.get("user_name")
-    if user_name is None:
+    if not user_name:
         try:
             user_name = redis_memory.load_user_name(state["user_id"])
         except:
@@ -159,7 +167,7 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
     model_messages = list(state["messages"])
 
     summary = state.get("summary")
-    if summary is not None:
+    if summary:
         model_messages.insert(
             0,
             SystemMessage(
@@ -170,21 +178,35 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
                 )
             )
         )
-    return {
+
+    if previous_draft and reflection_feedback:
+        prompt = ChatPromptTemplate.from_messages([
+        ("system", TSUNDERE_IMPROVE_FEEDBACK_PROMPT),
+            MessagesPlaceholder("message"),
+        ])
+        chain = prompt | llm
+
+        return {
         "user_name": user_name,
-        "messages": [chain.invoke({
+        "draft_message": chain.invoke({
             "user_name": user_name if user_name is not None else "(ไม่มี)",
             "mode": PERSONA_MODES[mode],
-            "message": model_messages})]
+            "reflection_feedback": reflection_feedback,
+            "draft_message": previous_draft,
+            "message": model_messages})
+        }
+
+    chain = prompt | llm
+    return {
+        "user_name": user_name,
+        "draft_message": chain.invoke({
+            "user_name": user_name if user_name is not None else "(ไม่มี)",
+            "mode": PERSONA_MODES[mode],
+            "message": model_messages,
+            "interpersonal_sentiment": state["sentiment_analysis"].sentiment,
+            "sentiment_intensity": state["sentiment_analysis"].intensity
+            })
     }
-
-def tools_router(state: ChatbotState):
-    last_message = state["tool_message"][-1]
-
-    if(hasattr(last_message, "tool_calls") and len(last_message.tool_calls) > 0):
-        return "call_tool"
-    else: 
-        return END
 
 def context_compaction_router(state:ChatbotState):
     if len(state["messages"]) > MAX_HISTORY:
@@ -210,19 +232,87 @@ def context_compaction_node(state:ChatbotState) -> ChatbotState:
     chain = prompt | deterministic_llm
 
     return {
-            "summary": chain.invoke({
+            "summary": chain.invoke({ # Add summary text
                 "previous_summary": previous_summary,
                 "conversation_text": conversation_text
             }).content,
             "messages": [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                RemoveMessage(id=REMOVE_ALL_MESSAGES), # Removing Old Message
                 *remaining_messages
             ]
         }
 
-graph = StateGraph(ChatbotState)
+def reflective_node(state: ChatbotState) -> ChatbotState:
+    reflection_count = state.get("reflection_count", 0)
+    
+    # กัน loop
+    if reflection_count >= MAX_REFLECTION_ROUNDS:
+        return {
+            "revise_needed": False,
+            "reflection_feedback": "",
+            "reflection_count": reflection_count
+        }
 
-preference_tool_node = ToolNode(tools=TOOLS, messages_key="tool_message")
+    last_user_message = ""
+    last_ai_message = ""
+    for msg in reversed(state["messages"]):
+        if last_user_message and last_ai_message:
+            break
+        if not last_user_message and msg.type == "human":
+            last_user_message = msg.content
+        if not last_ai_message and msg.type == "ai":
+            last_ai_message = msg.content
+
+    draft_message = state.get("draft_message").content
+
+    current_score = state.get("current_score", INITIAL_SCORE)
+
+    mode = get_emotional_mode(current_score)
+
+    structured_llm = deterministic_llm.with_structured_output(ReflectionResult)
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", REFLECTION_PROMPT),
+        ("human", REFLECTION_INPUT),
+    ])
+
+    chain = prompt | structured_llm
+
+    result = chain.invoke({ # Add summary text
+                "last_user_message": last_user_message,
+                "draft_message": draft_message,
+                "last_ai_message": last_ai_message,
+                "mode": PERSONA_MODES[mode],
+                "interpersonal_sentiment": state["sentiment_analysis"].sentiment,
+                "sentiment_intensity": state["sentiment_analysis"].intensity
+            })
+
+    return {
+        "revise_needed": result.revise_needed,
+        "reflection_feedback": result.feedback,
+        "reflection_count": reflection_count + 1,
+    }
+
+def commit_draft_message_node(state: ChatbotState) -> ChatbotState:
+    draft_response = state.get("draft_message", "")
+
+    if not draft_response:
+        return {}
+
+    return {
+        "messages": [draft_response],
+        "draft_message": "",
+        "reflection_feedback": "",
+        "revise_needed": False,
+        "reflection_count": 0,
+    }
+
+def reflective_router(state: ChatbotState):
+    if state.get("revise_needed", False):
+        return "retry"
+    return "pass"
+
+graph = StateGraph(ChatbotState)
 
 # Add nodes
 graph.add_node("sentiment_node", sentiment_node)
@@ -231,6 +321,8 @@ graph.add_node("tsundere_chatbot_node", tsundere_chatbot_node)
 graph.add_node("extract_user_info_node", extract_user_info_node)
 graph.add_node("preference_tool_node", preference_tool_node)
 graph.add_node("context_compaction_node", context_compaction_node)
+graph.add_node("reflective_node", reflective_node)
+graph.add_node("commit_draft_message_node", commit_draft_message_node)
 
 # Define edges (flow)
 
@@ -247,7 +339,14 @@ graph.add_conditional_edges("sentiment_node", should_update_score,
     }     
 )
 graph.add_edge("update_score_node", "tsundere_chatbot_node")
-graph.add_conditional_edges("tsundere_chatbot_node", context_compaction_router,
+graph.add_edge("tsundere_chatbot_node", "reflective_node")
+graph.add_conditional_edges("reflective_node", reflective_router,
+    {
+        "retry":"tsundere_chatbot_node",
+        "pass":"commit_draft_message_node"
+    }     
+)
+graph.add_conditional_edges("commit_draft_message_node", context_compaction_router,
     {
         "compact":"context_compaction_node",
         "skip":END
@@ -276,7 +375,7 @@ def call_graph(user_input: str, user_id: str, thread_id:str) -> Tuple[str, float
 if __name__ == "__main__":
     app.get_graph().draw_mermaid_png(output_file_path='debug.png')
     config = {"configurable": {
-    "thread_id": "twotwotwotwo"
+    "thread_id": "sevenseven1"
     }}
     
 

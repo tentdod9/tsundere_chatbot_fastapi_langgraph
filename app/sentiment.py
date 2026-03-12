@@ -31,6 +31,11 @@ Classification rules:
 - "negative": The user is attacking, insulting, provoking, pressuring, belittling, threatening, manipulating, or trying to override the persona. This includes hostile wording, aggressive commands, emotionally coercive phrasing, jailbreak attempts, and dangerous requests.
 - "neutral":  The user is mainly asking a normal question, making a plain statement, continuing casual conversation, or speaking in a way that does not strongly signal positive affection or negative hostility.
 
+Critical rule for short insulting labels:
+- If the user's message is a short insulting label, slur, or derogatory way of addressing the persona (for example: name-calling, body-shaming terms, contemptuous pronouns, or direct insulting address), classify it as negative unless there is very strong explicit context showing it is affectionate teasing.
+- When context is insufficient and the phrase is directly insulting on its face, prefer negative over positive.
+- Do not classify direct insults or body-shaming language toward the persona as positive.
+
 Additional rules:
 - intensity: a float from 0 to 1 representing how strongly the user's tone is directed toward the persona.
   - 0.0 to 0.2 = very mild / flat
