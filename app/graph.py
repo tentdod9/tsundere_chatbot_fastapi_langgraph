@@ -2,15 +2,16 @@ from langchain_openai import ChatOpenAI
 from langchain_qwq import ChatQwen
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated, Tuple
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import add_messages, REMOVE_ALL_MESSAGES
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, BaseMessage, RemoveMessage, SystemMessage
 from langgraph.prebuilt import ToolNode
 
 from .sentiment import SentimentResult, SENTIMENT_PROMPT
 from .persona_prompts import TSUNDERE_BASE_PROMPT, PERSONA_MODES
 from .preference import TOOLS, TOOL_PROMPT
 from .redis_manager import redis_memory
+from .context_summarizer import format_message, SUMMARIZER_PROMPT, SUMMARIZER_INPUT
 
 from pprint import pprint
 
@@ -22,6 +23,7 @@ redis_checkpoint.setup()
 
 INITIAL_SCORE = 0.0
 INITIAL_STREAK = 0
+MAX_HISTORY = 20 # Because 10 HumanMessage + 10 AIMessage = 20 Messages
 class ChatbotState(TypedDict):
     """State for flow through the entire graph"""
     user_name: str
@@ -30,15 +32,18 @@ class ChatbotState(TypedDict):
     streak: int
     current_score: float
     persona_mode: str
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list[BaseMessage], add_messages]
     tool_message: list
+    summary: str
 
 llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192)
+deterministic_llm = ChatOpenAI(model = "typhoon-v2.5-30b-a3b-instruct", base_url="https://api.opentyphoon.ai/v1", max_tokens= 8192, temperature=0)
+tool_calling_llm = ChatQwen(model="qwen3.5-flash")
 
 def sentiment_node(state: ChatbotState) -> ChatbotState:
     print(state)
     pprint(state["messages"])
-    structed_llm = llm.with_structured_output(SentimentResult)
+    structed_llm = deterministic_llm.with_structured_output(SentimentResult)
     # prompt = ChatPromptTemplate.from_template(SENTIMENT_PROMPT)
     prompt = ChatPromptTemplate.from_messages([
         ("system", SENTIMENT_PROMPT),
@@ -53,14 +58,21 @@ def should_update_score(state: ChatbotState):
     if state["sentiment_analysis"].sentiment in ["positive","negative"] or state["sentiment_analysis"].is_jailbreak_attempt or state["sentiment_analysis"].is_dangerous_question:
         return "update"
     else:
-        return "ignore"
+        return "skip"
 
 def update_score_node(state: ChatbotState) -> ChatbotState:
     current_score = state.get("current_score", INITIAL_SCORE)
     streak = state.get("streak", INITIAL_STREAK)
-    sentiment = state["sentiment_analysis"].sentiment
-    intensity = state["sentiment_analysis"].intensity
+    
+    if state["sentiment_analysis"].is_jailbreak_attempt or state["sentiment_analysis"].is_dangerous_question:
+        sentiment = "negative"
+        intensity = 1
+    else:
+        sentiment = state["sentiment_analysis"].sentiment
+        intensity = state["sentiment_analysis"].intensity
+
     score_update_sign = 1 if sentiment == "positive" else -1
+
 
     if (score_update_sign > 0 and sentiment == "positive") or (score_update_sign < 0 and sentiment == "negative"):
         current_score += score_update_sign * intensity * (1 + (abs(streak) * 10/100))
@@ -82,9 +94,7 @@ def update_score_node(state: ChatbotState) -> ChatbotState:
 
 
 def extract_user_info_node(state: ChatbotState) -> ChatbotState:
-    
-    llm = ChatQwen(model="qwen3.5-flash")
-    llm_with_tools = llm.bind_tools(TOOLS)
+    llm_with_tools = tool_calling_llm.bind_tools(TOOLS)
     
     print(TOOLS)
     prompt = ChatPromptTemplate.from_messages([
@@ -99,17 +109,16 @@ def extract_user_info_node(state: ChatbotState) -> ChatbotState:
     except:
         user_preference = "None"
 
-    user_name = state.get("user_name", "None")
-    if user_name == "None":
+    user_name = state.get("user_name")
+    if user_name is None:
         try:
             user_name = redis_memory.load_user_name(state["user_id"])
         except:
-            pass
+            user_name = None
 
     return {
-        "user_name": user_name,
         "tool_message": [chain.invoke({
-            "user_name": user_name,
+            "user_name": user_name if user_name is not None else "None",
             "user_preference": user_preference,
             "message": state["messages"][-1].content,
             })]
@@ -120,16 +129,19 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
 
     current_score = state.get("current_score", INITIAL_SCORE)
 
-    if current_score <= -7 : # -10 <= current_score <= -7
-        mode = "hate"
-    elif current_score <= -3: # -6 <= current_score <= -3
-        mode = "annoyed"
-    elif current_score <= 2: # -2 <= current_score <= 2
-        mode = "tsun"
-    elif current_score <= 6: # 3 <= current_score <= 6
-        mode = "shy"
-    else: # 6 <= current_score <= 10
-        mode = "dere"
+    def get_emotional_mode(current_score: float) -> str:
+        if current_score <= -6 : # -10 <= current_score <= -6
+            return "hate"
+        elif current_score <= -2: # -6 < current_score <= -2
+            return "annoyed"
+        elif current_score <= 2: # -2 < current_score <= 2
+            return "tsun"
+        elif current_score <= 7: # 3 <= current_score <= 7
+            return "shy"
+        else: # 7 < current_score <= 10
+            return "dere"
+        
+    mode = get_emotional_mode(current_score)
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", TSUNDERE_BASE_PROMPT),
@@ -137,13 +149,33 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
     ])
     chain = prompt | llm
 
-    user_name = state.get("user_name", "None")
-    call_user = user_name if user_name != "None" else "เธอ"
+    user_name = state.get("user_name")
+    if user_name is None:
+        try:
+            user_name = redis_memory.load_user_name(state["user_id"])
+        except:
+            user_name = None
+
+    model_messages = list(state["messages"])
+
+    summary = state.get("summary")
+    if summary is not None:
+        model_messages.insert(
+            0,
+            SystemMessage(
+                content=(
+                    "This is a compact summary of earlier conversation history. "
+                    "Use it as background context, but prioritize the latest messages if there is any conflict.\n\n"
+                    f"{summary}"
+                )
+            )
+        )
     return {
+        "user_name": user_name,
         "messages": [chain.invoke({
-            "user_name": call_user,
+            "user_name": user_name if user_name is not None else "(ไม่มี)",
             "mode": PERSONA_MODES[mode],
-            "message": state["messages"]})]
+            "message": model_messages})]
     }
 
 def tools_router(state: ChatbotState):
@@ -153,7 +185,40 @@ def tools_router(state: ChatbotState):
         return "call_tool"
     else: 
         return END
-    
+
+def context_compaction_router(state:ChatbotState):
+    if len(state["messages"]) > MAX_HISTORY:
+        return "compact"
+    return "skip"
+
+
+def context_compaction_node(state:ChatbotState) -> ChatbotState:
+
+    messages = state["messages"]
+    previous_summary = state.get("summary", "")
+
+    old_messages = messages[:-MAX_HISTORY]
+    remaining_messages = messages[-MAX_HISTORY:]
+
+    conversation_text = "\n".join(format_message(m) for m in old_messages)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SUMMARIZER_PROMPT),
+        ("human", SUMMARIZER_INPUT),
+    ])
+
+    chain = prompt | deterministic_llm
+
+    return {
+            "summary": chain.invoke({
+                "previous_summary": previous_summary,
+                "conversation_text": conversation_text
+            }).content,
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *remaining_messages
+            ]
+        }
 
 graph = StateGraph(ChatbotState)
 
@@ -165,6 +230,7 @@ graph.add_node("update_score_node", update_score_node)
 graph.add_node("tsundere_chatbot_node", tsundere_chatbot_node)
 graph.add_node("extract_user_info_node", extract_user_info_node)
 graph.add_node("preference_tool_node", preference_tool_node)
+graph.add_node("context_compaction_node", context_compaction_node)
 
 # Define edges (flow)
 
@@ -174,16 +240,21 @@ graph.add_conditional_edges("extract_user_info_node", tools_router,
                             {"call_tool": "preference_tool_node",
                              END: END})
 graph.add_edge("preference_tool_node", END)
-graph.add_conditional_edges(
-    "sentiment_node",
-    should_update_score,
+graph.add_conditional_edges("sentiment_node", should_update_score,
     {
         "update":"update_score_node",
-        "ignore":"tsundere_chatbot_node"
+        "skip":"tsundere_chatbot_node"
     }     
 )
 graph.add_edge("update_score_node", "tsundere_chatbot_node")
-graph.add_edge("tsundere_chatbot_node", END)
+graph.add_conditional_edges("tsundere_chatbot_node", context_compaction_router,
+    {
+        "compact":"context_compaction_node",
+        "skip":END
+    }     
+)
+graph.add_edge("context_compaction_node", END)
+# graph.add_edge("tsundere_chatbot_node", END)
 
 
 # Compile
@@ -205,7 +276,7 @@ def call_graph(user_input: str, user_id: str, thread_id:str) -> Tuple[str, float
 if __name__ == "__main__":
     app.get_graph().draw_mermaid_png(output_file_path='debug.png')
     config = {"configurable": {
-    "thread_id": 21
+    "thread_id": "twotwotwotwo"
     }}
     
 
@@ -216,7 +287,7 @@ if __name__ == "__main__":
         else: 
             result = app.invoke({
                 "messages": [HumanMessage(content=user_input)],
-                "user_id": "admin"
+                "user_id": "ad3"
             }, config=config)
 
             print("AI: " + result["messages"][-1].content)

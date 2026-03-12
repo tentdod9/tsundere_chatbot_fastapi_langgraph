@@ -53,7 +53,7 @@ class UserPreferenceMemory:
         """
         redis_key = self._user_name_key(user_id)
 
-        self.store.hset(redis_key, "user_name", json.dumps([user_name], ensure_ascii=False))
+        self.store.hset(redis_key, "user_name", user_name)
 
     def load_preference(self, user_id: str, key: str) -> Optional[List[str]]:
         """
@@ -101,7 +101,7 @@ class UserPreferenceMemory:
         """
         redis_key = self._user_name_key(user_id)
         
-        return self.store.hget(redis_key, "user_name")[0]
+        return self.store.hget(redis_key, "user_name")
     
     def add_message(self, user_id: str, thread_id: str,  human_message: str, ai_message: str):
         """
@@ -193,11 +193,8 @@ class UserPreferenceMemory:
         redis_key = self._sessions_list_key(user_id)
         return json.loads(self.store.hget(redis_key, "sessions"))
     
-   
+redis_memory = UserPreferenceMemory("redis://redis:6379") 
 
-
-    
-redis_memory = UserPreferenceMemory("redis://redis:6379")   
 if __name__ == "__main__":
 
     # redis_memory.add_session_list("admin4", "six", "ฉันชื่อเต็นท์ ชอบกินไอติม พิซซ่า ซูชิ และชอบดูอนิเมะ ออกกำลังกาย และอ่านนิยายวาย ฉันเกิดวันพุธ และชอบสีแดง")
