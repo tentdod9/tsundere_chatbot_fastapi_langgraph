@@ -1,7 +1,7 @@
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from typing import List
-from redis_manager import redis_memory
+from .redis_manager import redis_memory
 from langchain.tools import ToolRuntime
 # ==================== Tool Schemas ====================
 
