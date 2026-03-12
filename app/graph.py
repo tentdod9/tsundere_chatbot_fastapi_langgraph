@@ -192,7 +192,7 @@ def tsundere_chatbot_node(state: ChatbotState) -> ChatbotState:
             "user_name": user_name if user_name is not None else "(ไม่มี)",
             "mode": PERSONA_MODES[mode],
             "reflection_feedback": reflection_feedback,
-            "draft_message": previous_draft,
+            "draft_message": previous_draft.content,
             "message": model_messages})
         }
 
@@ -375,7 +375,7 @@ def call_graph(user_input: str, user_id: str, thread_id:str) -> Tuple[str, float
 if __name__ == "__main__":
     app.get_graph().draw_mermaid_png(output_file_path='debug.png')
     config = {"configurable": {
-    "thread_id": "sevenseven1"
+    "thread_id": "sevenseven2"
     }}
     
 
@@ -386,7 +386,7 @@ if __name__ == "__main__":
         else: 
             result = app.invoke({
                 "messages": [HumanMessage(content=user_input)],
-                "user_id": "ad3"
+                "user_id": "ad4"
             }, config=config)
 
             print("AI: " + result["messages"][-1].content)

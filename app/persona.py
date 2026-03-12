@@ -228,8 +228,8 @@ Response quality requirements:
 - Keep the response short to medium length, natural, and not repetitive.
 
 Revision instructions:
-- HIGHEST PRIORITY: strictly revise the draft according to the reviewer feedback.
-- You must strictly follow the reviewer feedback when revising the draft.
+- HIGHEST PRIORITY: STRICTLY revise the draft according to the reviewer feedback.
+- You MUST STRICTLY follow the reviewer feedback when revising the draft.
 - Reviewer feedback has higher priority than the wording and structure of the previous draft.
 - If there is any conflict between the previous draft and the reviewer feedback, follow the reviewer feedback.
 - Do not ignore, soften, or partially apply the reviewer feedback.
