@@ -1,8 +1,11 @@
 # Tsundere Chatbot API (FastAPI & LangGraph) 👧🏻🎀
 
+[![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/langgraph-%231C3C3C.svg?style=for-the-badge&logo=langgraph&logoColor=white)](https://python.langchain.com/v0.1/docs/langgraph/)
 [![Redis](https://img.shields.io/badge/redis-%23DD0031.svg?style=for-the-badge&logo=redis&logoColor=white)](https://redis.io/)
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+
 
 This repository contains a backend service for a **Tsundere Chatbot** driven by a complex agentic flow utilizing LangGraph and powered by low-computational resource LLMs. **The project is heavily focused on the Thai language**, utilizing [`typhoon-v2.5-30b-a3b-instruct`](https://opentyphoon.ai/) for its exceptional fluency and natural understanding of Thai conversational nuances, and [`qwen3.5-flash`](https://www.alibabacloud.com/zh/product/modelstudio/) for robust tool-parsing and internal logic processing. It offers a conversational API designed to exhibit a "Tsundere" personality, alongside features to track user affection scores, apply guardrails, Tsundere-style response, and manage chat sessions using Redis. For fronend repository please refer to [Tsundere Chatbot UI](https://github.com/tentdod9/tsundere_chatbot_ui).
 
