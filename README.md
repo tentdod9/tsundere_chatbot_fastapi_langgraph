@@ -104,7 +104,7 @@ DASHSCOPE_API_KEY=your_dashscope_api_key
 
 *(Note: The codebase uses OpenTyphoon endpoint by replacing the base URL of Langchain's `ChatOpenAI` configuration.)*
 
-### 🏃‍♀️‍➡️ Running the Application
+### 🏃‍♀️‍➡️➡️ Running the Application
 
 This project is fully containerized using Docker Compose.
 
