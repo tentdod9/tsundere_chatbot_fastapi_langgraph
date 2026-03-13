@@ -52,7 +52,7 @@ The Tsundere's personality shifts dynamically based on the **Affection Score** (
 - **Framework:** FastAPI
 - **Agent Orchestrator:** LangGraph
 - **LLMs:** OpenTyphoon API for conversational capabilities, DashScope (Qwen) for robust tool parsing.
-- **State Store & In-Memory Database:** Redis
+- **Database:** Redis
 - **Containerization:** Docker & Docker Compose
 
 ## 📂 Project Structure
